@@ -3,6 +3,7 @@ import requests
 import json 
 from openai import OpenAI
 from pprint import pprint
+import pandas as pd
 
 model = "gpt-4o-mini"
 
@@ -28,12 +29,13 @@ oauth_data = {
     }
 # ideally, request token only if no token or previous token is outdated
 auth_request = requests.post(JUDILIBRE_AUTH_URL, data=oauth_data)
-print(auth_request.json())
+#print(auth_request.json())
 token = auth_request.json()["access_token"]
 
 api_prompt = """Voici une question d'un utilisateur concernant la jurisprudence en France:
 :USER_REQUEST:
-Extrait le ou les mots clés nécessaire à la requête de l'API Judilibre. Soit le plus synthétique dans les mots clés et essaie de minimiser le nombre de mots."""
+Extrait le ou les mots clés nécessaire à la requête de l'API Judilibre. Soit le plus synthétique dans les mots clés et essaie de minimiser le nombre de mots.
+Ecris la requête sous forme des mots les plus impactans, sans mots de liaison aucun."""
 api_functions =  [
     {
       "type": "function",
@@ -79,15 +81,13 @@ else:
 
     # Create a chat input field to allow the user to enter a message. This will display
     # automatically at the bottom of the page.
+    answer_dict = {}
     if prompt := st.chat_input("What is up?"):
 
         # Store and display the current prompt.
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
-
-        
-
         api_messages = [{"role": "user", "content": api_prompt.replace(":USER_REQUEST:",prompt)}]
         completion = client.chat.completions.create(
         model=model,
@@ -104,23 +104,32 @@ else:
 
         # Then send the query
         headers = {"Authorization": f"Bearer {token}"}
-        params = {"query": query}
+        params = {"query": query, "page_size":50,"sort":"score","page":0}
         query_request = requests.get(JUDILIBRE_QUERY_URL, headers=headers, params=params)
-        results = query_request.json()["results"]
         # Les résultats sont paginés, idéalement il faudrait tout récupérer
         results_summaries = []
-        for result_id, result in enumerate(results):
-            if "summary" in result:
-                results_summaries.append({"result_id": result_id, "summary": result["summary"]})
-            else:
-                results_summaries.append({"result_id": result_id, "summary": result["highlights"]["text"][0]})
-        
+        print(query)
+       
+        while query_request.json()["next_page"]:
+            print(f"page {query_request.json()['page']}")
+            results = query_request.json()["results"]
+            for result_id, result in enumerate(results):
+                pprint(result["number"] +": "+result["summary"])
+                if "summary" in result:
+                    results_summaries.append({"result_id": result_id, "summary": result["number"] +": "+ result["summary"]})
+                else:
+                    results_summaries.append({"result_id": result_id, "summary":  result["number"] +": "+ result["highlights"]["text"][0]})
+            params["page"] += 1
+            query_request = requests.get(JUDILIBRE_QUERY_URL, headers=headers, params=params)
+            print("next page")
+            break
 
         # Generate a response using the OpenAI API.
         stream = client.chat.completions.create(
             model=model,
-            messages=[{"role": "user","content":"Tu es un robot avocat très sérieux. Tu utilises un ton précis et clair. Voici une liste de documents:\n" +"\n".join([r["summary"] for r in results_summaries]) +"\n . Regroupe ces textes en trois catégories majeures et explique ton choix par une phrase à la fin de chaque groupe. Ne renvoie que ton analyse."}],
+            messages=[{"role": "user","content":f"Tu es un robot avocat. Voici une question d'un client:\n'{prompt}'\nVoici une liste de documents:\n" +"\n".join([r["summary"] for r in results_summaries]) +"\n . Utilise ces documents pour répondre le plus précisément possible à la question du client. Cite les extraits de documents qui sont pertinents."}],
             stream=True,
+            temperature=0
         )
         # Stream the response to the chat using `st.write_stream`, then store it in 
         # session state.
